@@ -1,0 +1,6 @@
+﻿streamlit==1.28.0
+pandas==2.2.0
+numpy==1.26.4
+streamlit-option-menu==0.3.6
+reportlab==4.1.0
+# twilio==8.13.0  # Commented out - remove from app.py or uncomment
