@@ -135,10 +135,26 @@ if 'selected_module' not in st.session_state:
     st.session_state.selected_module = "Dashboard"
 if 'last_receipt' not in st.session_state:
     st.session_state.last_receipt = None
+if 'products_data' not in st.session_state:
+    st.session_state.products_data = None
+if 'users_data' not in st.session_state:
+    st.session_state.users_data = None
 
-# Initialize classes
-auth = Authentication()
-db = Database()
+# Initialize classes only once
+if 'auth' not in st.session_state:
+    st.session_state.auth = Authentication()
+if 'db' not in st.session_state:
+    st.session_state.db = Database()
+
+# Cache database data to prevent multiple connections
+@st.cache_data(ttl=300, show_spinner=False)
+def get_cached_data():
+    """Cache database data to prevent multiple connections"""
+    try:
+        return st.session_state.db.get_sample_data()
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return st.session_state.db.get_default_data()
 
 # MODULE 1: User Authentication Interface
 def show_login():
@@ -150,18 +166,18 @@ def show_login():
         with st.container():
             st.markdown("### Secure Login")
             
-            username = st.text_input("👤 Username", placeholder="Enter your username")
-            password = st.text_input("🔒 Password", type="password", placeholder="Enter your password")
+            username = st.text_input("👤 Username", placeholder="Enter your username", key="login_username")
+            password = st.text_input("🔒 Password", type="password", placeholder="Enter your password", key="login_password")
             
             col_a, col_b = st.columns(2)
             with col_a:
-                login_btn = st.button("🚀 Login", type="primary")
+                login_btn = st.button("🚀 Login", type="primary", key="login_btn")
             with col_b:
-                reset_btn = st.button("🔄 Reset")
+                reset_btn = st.button("🔄 Reset", key="reset_btn")
             
             if login_btn:
                 if username and password:
-                    result = auth.login(username, password)
+                    result = st.session_state.auth.login(username, password)
                     if result and result.get('authenticated'):
                         st.session_state.authenticated = True
                         st.session_state.current_user = {
@@ -206,8 +222,11 @@ def quicksort_products(products, key='name'):
 def show_dashboard():
     st.markdown("<h1 class='main-header'>📊 Dashboard Overview</h1>", unsafe_allow_html=True)
     
-    # Get sample data
-    products, users = db.get_sample_data()
+    # Get sample data from cache
+    if st.session_state.products_data is None:
+        st.session_state.products_data, st.session_state.users_data = get_cached_data()
+    
+    products = st.session_state.products_data
     
     # Calculate metrics
     total_products = len(products)
@@ -271,7 +290,7 @@ def show_dashboard():
         fig = px.pie(status_data, values='Count', names='Status', 
                     color_discrete_sequence=['#10B981', '#F59E0B', '#EF4444'])
         fig.update_traces(textposition='inside', textinfo='percent+label')
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     
     with col2:
         st.markdown("### 📊 Top Products by Stock Value")
@@ -288,7 +307,7 @@ def show_dashboard():
                     color='Value',
                     color_continuous_scale='Viridis')
         fig.update_layout(xaxis_title="", yaxis_title="Stock Value (KES)")
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     
     # Low stock alerts
     st.markdown("### ⚠️ Low Stock Alerts")
@@ -313,27 +332,31 @@ def show_dashboard():
     else:
         st.success("🎉 All products have sufficient stock levels!")
 
-# MODULE 3: Sales Processing Interface
+# MODULE 3: Sales Processing Interface - FIXED VERSION
 def show_sales_processing():
     st.markdown("<h1 class='main-header'>🛒 Sales Processing</h1>", unsafe_allow_html=True)
     
-    products, _ = db.get_sample_data()
+    # Get cached data
+    if st.session_state.products_data is None:
+        st.session_state.products_data, st.session_state.users_data = get_cached_data()
     
-    col1, col2 = st.columns([2, 1])
+    products = st.session_state.products_data
     
-    with col1:
+    # Use tabs instead of nested columns to fix the nesting issue
+    tab1, tab2 = st.tabs(["🏷️ Product Selection", "🛍️ Shopping Cart & Checkout"])
+    
+    with tab1:
         st.markdown("### 🏷️ Product Selection")
         
-        # Search and filter
-        search_term = st.text_input("🔍 Search products", placeholder="Type product name or category...")
-        
-        col_filter1, col_filter2 = st.columns(2)
-        with col_filter1:
+        # Search and filter in a single row
+        search_col1, search_col2, search_col3 = st.columns([3, 2, 2])
+        with search_col1:
+            search_term = st.text_input("🔍 Search products", placeholder="Type product name or category...", key="search_main")
+        with search_col2:
             categories = list(set(p['category'] for p in products))
-            selected_category = st.selectbox("📂 Filter by category", ["All"] + categories)
-        
-        with col_filter2:
-            sort_option = st.selectbox("🔢 Sort by", ["Name (A-Z)", "Name (Z-A)", "Price (Low-High)", "Price (High-Low)"])
+            selected_category = st.selectbox("📂 Filter by category", ["All"] + categories, key="category_main")
+        with search_col3:
+            sort_option = st.selectbox("🔢 Sort by", ["Name (A-Z)", "Name (Z-A)", "Price (Low-High)", "Price (High-Low)"], key="sort_main")
         
         # Filter products
         filtered_products = products
@@ -359,76 +382,89 @@ def show_sales_processing():
         if reverse:
             sorted_products = sorted_products[::-1]
         
-        # Display products in grid
+        # Display products in grid without nested columns
         st.markdown("### Available Products")
         
-        cols = st.columns(3)
-        for idx, product in enumerate(sorted_products):
-            with cols[idx % 3]:
-                with st.container():
-                    stock_status = "🟢" if product['stock_quantity'] >= product['min_stock_level'] else \
-                                  "🟡" if product['stock_quantity'] >= product['min_stock_level'] * 0.3 else "🔴"
-                    
-                    st.markdown(f"""
-                    <div class='card'>
-                        <h4>{stock_status} {product['name']}</h4>
-                        <p><strong>Category:</strong> {product['category']}</p>
-                        <p><strong>Price:</strong> KES {product['price']:,.2f}</p>
-                        <p><strong>Stock:</strong> {product['stock_quantity']} units</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    qty = st.number_input(f"Quantity", min_value=1, max_value=product['stock_quantity'], 
-                                         value=1, key=f"qty_{product['id']}")
-                    
-                    if st.button(f"➕ Add to Cart", key=f"add_{product['id']}"):
-                        cart_item = {
-                            'id': product['id'],
-                            'name': product['name'],
-                            'price': product['price'],
-                            'quantity': qty,
-                            'total': product['price'] * qty
-                        }
+        # Create a container for products
+        products_container = st.container()
+        
+        with products_container:
+            # Display products in rows of 3 without nested columns
+            for i in range(0, len(sorted_products), 3):
+                row_products = sorted_products[i:i+3]
+                cols = st.columns(3)
+                
+                for j, product in enumerate(row_products):
+                    with cols[j]:
+                        stock_status = "🟢" if product['stock_quantity'] >= product['min_stock_level'] else \
+                                      "🟡" if product['stock_quantity'] >= product['min_stock_level'] * 0.3 else "🔴"
                         
-                        # Check if item already in cart
-                        existing_item = next((item for item in st.session_state.cart 
-                                            if item['id'] == product['id']), None)
+                        st.markdown(f"""
+                        <div class='card'>
+                            <h4>{stock_status} {product['name']}</h4>
+                            <p><strong>Category:</strong> {product['category']}</p>
+                            <p><strong>Price:</strong> KES {product['price']:,.2f}</p>
+                            <p><strong>Stock:</strong> {product['stock_quantity']} units</p>
+                        </div>
+                        """, unsafe_allow_html=True)
                         
-                        if existing_item:
-                            existing_item['quantity'] += qty
-                            existing_item['total'] = existing_item['price'] * existing_item['quantity']
-                        else:
-                            st.session_state.cart.append(cart_item)
+                        qty = st.number_input(f"Quantity", min_value=1, max_value=product['stock_quantity'], 
+                                             value=1, key=f"qty_{product['id']}_{i}_{j}")
                         
-                        st.success(f"Added {qty} x {product['name']} to cart!")
-                        st.rerun()
+                        if st.button(f"➕ Add to Cart", key=f"add_{product['id']}_{i}_{j}"):
+                            cart_item = {
+                                'id': product['id'],
+                                'name': product['name'],
+                                'price': product['price'],
+                                'quantity': qty,
+                                'total': product['price'] * qty
+                            }
+                            
+                            # Check if item already in cart
+                            existing_item = next((item for item in st.session_state.cart 
+                                                if item['id'] == product['id']), None)
+                            
+                            if existing_item:
+                                existing_item['quantity'] += qty
+                                existing_item['total'] = existing_item['price'] * existing_item['quantity']
+                            else:
+                                st.session_state.cart.append(cart_item)
+                            
+                            st.success(f"Added {qty} x {product['name']} to cart!")
+                            st.rerun()
     
-    with col2:
+    with tab2:
         st.markdown("### 🛍️ Shopping Cart")
         
         if not st.session_state.cart:
             st.info("🛒 Your cart is empty")
         else:
-            # Display cart items
+            # Display cart items without nested columns
             cart_total = 0
-            for item in st.session_state.cart:
-                col_a, col_b, col_c = st.columns([3, 2, 1])
-                with col_a:
-                    st.write(f"{item['name']}")
-                with col_b:
-                    st.write(f"{item['quantity']} x KES {item['price']:,.2f}")
-                with col_c:
-                    if st.button("❌", key=f"remove_{item['id']}"):
-                        st.session_state.cart = [i for i in st.session_state.cart if i['id'] != item['id']]
-                        st.rerun()
-                
-                cart_total += item['total']
+            cart_items_container = st.container()
+            
+            with cart_items_container:
+                for idx, item in enumerate(st.session_state.cart):
+                    # Use a single row layout without nested columns
+                    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+                    with col1:
+                        st.write(f"**{item['name']}**")
+                    with col2:
+                        st.write(f"Qty: {item['quantity']}")
+                    with col3:
+                        st.write(f"KES {item['total']:,.2f}")
+                    with col4:
+                        if st.button("❌", key=f"remove_{item['id']}_{idx}"):
+                            st.session_state.cart = [i for i in st.session_state.cart if i['id'] != item['id']]
+                            st.rerun()
+                    
+                    cart_total += item['total']
             
             st.markdown("---")
             st.markdown(f"**Subtotal:** KES {cart_total:,.2f}")
             
             # Tax calculation
-            tax_rate = st.slider("Tax Rate (%)", 0.0, 30.0, 16.0, 0.1)
+            tax_rate = st.slider("Tax Rate (%)", 0.0, 30.0, 16.0, 0.1, key="tax_slider")
             tax_amount = cart_total * (tax_rate / 100)
             final_total = cart_total + tax_amount
             
@@ -439,13 +475,15 @@ def show_sales_processing():
             
             # Payment options
             payment_method = st.selectbox("💳 Payment Method", 
-                                         ["Cash", "Credit Card", "M-Pesa", "Debit Card", "Bank Transfer"])
+                                         ["Cash", "Credit Card", "M-Pesa", "Debit Card", "Bank Transfer"],
+                                         key="payment_method")
             
-            customer_name = st.text_input("👤 Customer Name", placeholder="Enter customer name")
+            customer_name = st.text_input("👤 Customer Name", placeholder="Enter customer name", key="customer_name")
             
-            col_btn1, col_btn2 = st.columns(2)
+            # Buttons in a single row
+            col_btn1, col_btn2, col_btn3 = st.columns(3)
             with col_btn1:
-                if st.button("✅ Complete Sale", type="primary"):
+                if st.button("✅ Complete Sale", type="primary", key="complete_sale"):
                     if customer_name:
                         # Generate receipt
                         receipt_data = {
@@ -475,18 +513,16 @@ def show_sales_processing():
                         st.warning("Please enter customer name")
             
             with col_btn2:
-                if st.button("🗑️ Clear Cart", type="secondary"):
+                if st.button("🗑️ Clear Cart", type="secondary", key="clear_cart"):
                     st.session_state.cart = []
                     st.rerun()
-        
-        # Show last receipt if exists
-        if st.session_state.last_receipt:
-            st.markdown("---")
-            if st.button("📄 View Last Receipt"):
-                show_receipt_preview(st.session_state.last_receipt)
+            
+            with col_btn3:
+                if st.session_state.last_receipt and st.button("📄 View Last Receipt", key="view_last"):
+                    show_receipt_preview(st.session_state.last_receipt)
 
 def show_receipt_preview(receipt_data):
-    """Display receipt preview - FIXED VERSION"""
+    """Display receipt preview"""
     st.markdown("### 📄 Receipt Preview")
     
     # Create receipt using Streamlit components instead of raw HTML
@@ -553,10 +589,10 @@ def show_receipt_preview(receipt_data):
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("📥 Download PDF Receipt"):
+        if st.button("📥 Download PDF Receipt", key="pdf_btn"):
             generate_pdf_receipt(receipt_data)
     with col2:
-        if st.button("📊 Export to Excel"):
+        if st.button("📊 Export to Excel", key="excel_btn"):
             generate_excel_receipt(receipt_data)
 
 def generate_pdf_receipt(receipt_data):
@@ -623,7 +659,8 @@ def generate_pdf_receipt(receipt_data):
         label="⬇️ Click to Download PDF",
         data=buffer,
         file_name=f"receipt_{receipt_data['transaction_id']}.pdf",
-        mime="application/pdf"
+        mime="application/pdf",
+        key=f"download_pdf_{receipt_data['transaction_id']}"
     )
 
 def generate_excel_receipt(receipt_data):
@@ -665,14 +702,19 @@ def generate_excel_receipt(receipt_data):
         label="⬇️ Click to Download Excel",
         data=buffer,
         file_name=f"receipt_{receipt_data['transaction_id']}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"download_excel_{receipt_data['transaction_id']}"
     )
 
 # MODULE 4: Sorted Inventory List
 def show_inventory():
     st.markdown("<h1 class='main-header'>📦 Inventory Management</h1>", unsafe_allow_html=True)
     
-    products, _ = db.get_sample_data()
+    # Get cached data
+    if st.session_state.products_data is None:
+        st.session_state.products_data, st.session_state.users_data = get_cached_data()
+    
+    products = st.session_state.products_data
     
     # CRUD Operations
     tab1, tab2, tab3, tab4 = st.tabs(["📋 View Inventory", "➕ Add Product", "✏️ Edit Product", "🔍 Search & Filter"])
@@ -681,13 +723,13 @@ def show_inventory():
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            view_option = st.selectbox("View Mode", ["All Products", "Low Stock", "Critical Stock"])
+            view_option = st.selectbox("View Mode", ["All Products", "Low Stock", "Critical Stock"], key="view_mode")
         
         with col2:
-            sort_by = st.selectbox("Sort By", ["Name", "Category", "Stock Level", "Price"])
+            sort_by = st.selectbox("Sort By", ["Name", "Category", "Stock Level", "Price"], key="sort_by")
         
         with col3:
-            sort_order = st.selectbox("Order", ["Ascending", "Descending"])
+            sort_order = st.selectbox("Order", ["Ascending", "Descending"], key="sort_order")
         
         # Filter products
         if view_option == "Low Stock":
@@ -767,7 +809,7 @@ def show_inventory():
                     x='Category', y='value', color='variable',
                     color_discrete_map={'Adequate': '#10B981', 'Low': '#F59E0B', 'Critical': '#EF4444'},
                     title="Stock Status by Category")
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     
     with tab2:
         st.markdown("### Add New Product")
@@ -776,14 +818,14 @@ def show_inventory():
             col1, col2 = st.columns(2)
             
             with col1:
-                name = st.text_input("Product Name*", placeholder="Enter product name")
-                category = st.selectbox("Category*", ["Beverages", "Food", "Dessert", "Snacks", "Other"])
-                price = st.number_input("Price (KES)*", min_value=0.0, step=0.01, format="%.2f")
+                name = st.text_input("Product Name*", placeholder="Enter product name", key="add_name")
+                category = st.selectbox("Category*", ["Beverages", "Food", "Dessert", "Snacks", "Other"], key="add_category")
+                price = st.number_input("Price (KES)*", min_value=0.0, step=0.01, format="%.2f", key="add_price")
             
             with col2:
-                stock_quantity = st.number_input("Initial Stock*", min_value=0, step=1)
-                min_stock_level = st.number_input("Minimum Stock Level*", min_value=1, step=1, value=10)
-                description = st.text_area("Description", placeholder="Product description...")
+                stock_quantity = st.number_input("Initial Stock*", min_value=0, step=1, key="add_stock")
+                min_stock_level = st.number_input("Minimum Stock Level*", min_value=1, step=1, value=10, key="add_min_stock")
+                description = st.text_area("Description", placeholder="Product description...", key="add_description")
             
             submitted = st.form_submit_button("➕ Add Product", type="primary")
             
@@ -799,7 +841,7 @@ def show_inventory():
         st.markdown("### Edit Existing Product")
         
         product_list = [f"{p['id']} - {p['name']}" for p in products]
-        selected_product = st.selectbox("Select Product to Edit", product_list)
+        selected_product = st.selectbox("Select Product to Edit", product_list, key="edit_select")
         
         if selected_product:
             product_id = int(selected_product.split(" - ")[0])
@@ -810,24 +852,25 @@ def show_inventory():
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        new_name = st.text_input("Product Name", value=product['name'])
+                        new_name = st.text_input("Product Name", value=product['name'], key="edit_name")
                         new_category = st.selectbox("Category", 
                                                    ["Beverages", "Food", "Dessert", "Snacks", "Other"],
                                                    index=["Beverages", "Food", "Dessert", "Snacks", "Other"].index(product['category']) 
-                                                   if product['category'] in ["Beverages", "Food", "Dessert", "Snacks", "Other"] else 0)
+                                                   if product['category'] in ["Beverages", "Food", "Dessert", "Snacks", "Other"] else 0,
+                                                   key="edit_category")
                         new_price = st.number_input("Price (KES)", value=float(product['price']), 
-                                                   min_value=0.0, step=0.01, format="%.2f")
+                                                   min_value=0.0, step=0.01, format="%.2f", key="edit_price")
                     
                     with col2:
-                        new_stock = st.number_input("Stock Quantity", value=product['stock_quantity'], min_value=0, step=1)
-                        new_min_level = st.number_input("Min Stock Level", value=product['min_stock_level'], min_value=1, step=1)
-                        new_description = st.text_area("Description", value=product.get('description', ''))
+                        new_stock = st.number_input("Stock Quantity", value=product['stock_quantity'], min_value=0, step=1, key="edit_stock")
+                        new_min_level = st.number_input("Min Stock Level", value=product['min_stock_level'], min_value=1, step=1, key="edit_min_level")
+                        new_description = st.text_area("Description", value=product.get('description', ''), key="edit_description")
                     
                     col_btn1, col_btn2 = st.columns(2)
                     with col_btn1:
-                        update_btn = st.form_submit_button("💾 Update Product", type="primary")
+                        update_btn = st.form_submit_button("💾 Update Product", type="primary", key="update_btn")
                     with col_btn2:
-                        delete_btn = st.form_submit_button("🗑️ Delete Product", type="secondary")
+                        delete_btn = st.form_submit_button("🗑️ Delete Product", type="secondary", key="delete_btn")
                     
                     if update_btn:
                         st.success(f"Product '{new_name}' updated successfully!")
@@ -840,12 +883,12 @@ def show_inventory():
         col1, col2 = st.columns(2)
         
         with col1:
-            search_name = st.text_input("Search by Name", placeholder="Enter product name...")
-            price_range = st.slider("Price Range (KES)", 0.0, 1000.0, (0.0, 1000.0))
+            search_name = st.text_input("Search by Name", placeholder="Enter product name...", key="search_name")
+            price_range = st.slider("Price Range (KES)", 0.0, 1000.0, (0.0, 1000.0), key="price_range")
         
         with col2:
-            search_category = st.multiselect("Categories", ["Beverages", "Food", "Dessert", "Snacks", "Other"])
-            stock_range = st.slider("Stock Range", 0, 200, (0, 200))
+            search_category = st.multiselect("Categories", ["Beverages", "Food", "Dessert", "Snacks", "Other"], key="search_category")
+            stock_range = st.slider("Stock Range", 0, 200, (0, 200), key="stock_range")
         
         # Apply filters
         filtered = products
@@ -865,33 +908,38 @@ def show_inventory():
         else:
             st.info("No products match your search criteria")
 
-# MODULE 5: Sales Reports Interface
+# MODULE 5: Sales Reports Interface - FIXED with proper date handling
 def show_reports():
     st.markdown("<h1 class='main-header'>📈 Sales Reports & Analytics</h1>", unsafe_allow_html=True)
     
-    # Generate sample sales data
-    products, _ = db.get_sample_data()
+    # Get cached data
+    if st.session_state.products_data is None:
+        st.session_state.products_data, st.session_state.users_data = get_cached_data()
+    
+    products = st.session_state.products_data
     
     # Time period selection
     col1, col2, col3 = st.columns(3)
     
     with col1:
         report_type = st.selectbox("Report Type", 
-                                  ["Sales Summary", "Product Performance", "Category Analysis", "Time Series"])
+                                  ["Sales Summary", "Product Performance", "Category Analysis", "Time Series"],
+                                  key="report_type")
     
     with col2:
         time_period = st.selectbox("Time Period", 
-                                  ["Today", "Yesterday", "Last 7 Days", "This Month", "Last Month", "Custom Range"])
+                                  ["Today", "Yesterday", "Last 7 Days", "This Month", "Last Month", "Custom Range"],
+                                  key="time_period")
     
     with col3:
         if time_period == "Custom Range":
             date_col1, date_col2 = st.columns(2)
             with date_col1:
-                start_date = st.date_input("Start Date")
+                start_date = st.date_input("Start Date", key="start_date")
             with date_col2:
-                end_date = st.date_input("End Date")
+                end_date = st.date_input("End Date", key="end_date")
     
-    # Generate sample sales data based on selection
+    # Generate sample sales data with proper date handling
     dates = pd.date_range(start='2024-01-01', end='2024-01-31', freq='D')
     sales_data = []
     
@@ -900,8 +948,9 @@ def show_reports():
         for _ in range(daily_sales):
             product = random.choice(products)
             qty = random.randint(1, 5)
+            # Convert date to string to avoid Arrow serialization issues
             sales_data.append({
-                'date': date,
+                'date': date.strftime('%Y-%m-%d'),
                 'product': product['name'],
                 'category': product['category'],
                 'quantity': qty,
@@ -975,7 +1024,7 @@ def show_reports():
             fig = px.pie(category_sales, values='total', names='category',
                         color_discrete_sequence=px.colors.qualitative.Set3)
             fig.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         
         with col2:
             st.markdown("### Daily Sales Trend")
@@ -985,7 +1034,7 @@ def show_reports():
                          title="Sales Over Time",
                          markers=True)
             fig.update_layout(xaxis_title="Date", yaxis_title="Total Sales (KES)")
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         
         # Payment method distribution
         st.markdown("### Payment Methods Distribution")
@@ -995,7 +1044,7 @@ def show_reports():
                     color='payment_method',
                     title="Sales by Payment Method")
         fig.update_layout(xaxis_title="Payment Method", yaxis_title="Total Sales (KES)")
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     
     with tab3:
         st.markdown("### Detailed Sales Data")
@@ -1004,13 +1053,13 @@ def show_reports():
         col_filter1, col_filter2, col_filter3 = st.columns(3)
         
         with col_filter1:
-            table_category = st.multiselect("Filter by Category", df_sales['category'].unique())
+            table_category = st.multiselect("Filter by Category", df_sales['category'].unique(), key="table_category")
         
         with col_filter2:
-            table_products = st.multiselect("Filter by Product", df_sales['product'].unique())
+            table_products = st.multiselect("Filter by Product", df_sales['product'].unique(), key="table_products")
         
         with col_filter3:
-            sort_table = st.selectbox("Sort By", ["Date", "Product", "Total", "Quantity"])
+            sort_table = st.selectbox("Sort By", ["Date", "Product", "Total", "Quantity"], key="sort_table")
         
         # Apply filters
         filtered_df = df_sales.copy()
@@ -1022,9 +1071,16 @@ def show_reports():
             filtered_df = filtered_df[filtered_df['product'].isin(table_products)]
         
         # Sort table
-        filtered_df = filtered_df.sort_values(sort_table.lower())
+        if sort_table == "Date":
+            filtered_df = filtered_df.sort_values('date')
+        elif sort_table == "Product":
+            filtered_df = filtered_df.sort_values('product')
+        elif sort_table == "Total":
+            filtered_df = filtered_df.sort_values('total', ascending=False)
+        elif sort_table == "Quantity":
+            filtered_df = filtered_df.sort_values('quantity', ascending=False)
         
-        # Display table
+        # Display table with proper date format
         st.dataframe(filtered_df, width='stretch')
         
         # Summary statistics
@@ -1039,14 +1095,16 @@ def show_reports():
         
         with col1:
             export_format = st.selectbox("Export Format", 
-                                        ["CSV", "Excel", "PDF Summary", "JSON"])
+                                        ["CSV", "Excel", "PDF Summary", "JSON"],
+                                        key="export_format")
         
         with col2:
             data_type = st.selectbox("Data Type", 
-                                    ["Sales Data", "Summary Report", "Product Performance", "Category Analysis"])
+                                    ["Sales Data", "Summary Report", "Product Performance", "Category Analysis"],
+                                    key="data_type")
         
         with col3:
-            include_charts = st.checkbox("Include Charts", value=True)
+            include_charts = st.checkbox("Include Charts", value=True, key="include_charts")
         
         # Generate export data
         if data_type == "Sales Data":
@@ -1073,17 +1131,18 @@ def show_reports():
         col_btn1, col_btn2, col_btn3 = st.columns(3)
         
         with col_btn1:
-            if st.button("📥 Download CSV", width='stretch'):
+            if st.button("📥 Download CSV", use_container_width=True, key="download_csv"):
                 csv = export_df.to_csv(index=False)
                 st.download_button(
                     label="⬇️ Click to Download",
                     data=csv,
                     file_name=f"sales_report_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv"
+                    mime="text/csv",
+                    key=f"csv_download_{datetime.now().strftime('%Y%m%d%H%M%S')}"
                 )
         
         with col_btn2:
-            if st.button("📊 Download Excel", width='stretch'):
+            if st.button("📊 Download Excel", use_container_width=True, key="download_excel"):
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     export_df.to_excel(writer, index=False, sheet_name='Report')
@@ -1092,11 +1151,12 @@ def show_reports():
                     label="⬇️ Click to Download",
                     data=buffer,
                     file_name=f"sales_report_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"excel_download_{datetime.now().strftime('%Y%m%d%H%M%S')}"
                 )
         
         with col_btn3:
-            if st.button("📄 Download PDF", width='stretch'):
+            if st.button("📄 Download PDF", use_container_width=True, key="download_pdf"):
                 st.info("PDF generation would be implemented with reportlab")
 
 # MODULE 6: User Management Interface (Admin Only)
@@ -1108,7 +1168,10 @@ def show_user_management():
         st.warning("⚠️ This section is only accessible to administrators.")
         return
     
-    _, users = db.get_sample_data()
+    if st.session_state.users_data is None:
+        st.session_state.products_data, st.session_state.users_data = get_cached_data()
+    
+    users = st.session_state.users_data
     
     tab1, tab2, tab3, tab4 = st.tabs(["👤 User List", "➕ Add User", "📊 Activity Logs", "⚙️ Account Settings"])
     
@@ -1132,7 +1195,7 @@ def show_user_management():
         st.dataframe(df_users, width='stretch', hide_index=True)
         
         # Actions based on editor
-        if st.button("💾 Save Changes", type="primary"):
+        if st.button("💾 Save Changes", type="primary", key="save_users"):
             st.success("User data updated successfully!")
     
     with tab2:
@@ -1142,20 +1205,20 @@ def show_user_management():
             col1, col2 = st.columns(2)
             
             with col1:
-                new_username = st.text_input("Username*", placeholder="Enter username")
-                new_email = st.text_input("Email*", placeholder="user@example.com")
-                new_password = st.text_input("Password*", type="password", placeholder="Enter password")
+                new_username = st.text_input("Username*", placeholder="Enter username", key="new_username")
+                new_email = st.text_input("Email*", placeholder="user@example.com", key="new_email")
+                new_password = st.text_input("Password*", type="password", placeholder="Enter password", key="new_password")
             
             with col2:
-                new_role = st.selectbox("Role*", ["admin", "manager", "clerk"])
-                is_active = st.checkbox("Active Account", value=True)
-                send_welcome = st.checkbox("Send welcome email", value=True)
+                new_role = st.selectbox("Role*", ["admin", "manager", "clerk"], key="new_role")
+                is_active = st.checkbox("Active Account", value=True, key="is_active")
+                send_welcome = st.checkbox("Send welcome email", value=True, key="send_welcome")
             
             col_btn1, col_btn2 = st.columns(2)
             with col_btn1:
-                submit_user = st.form_submit_button("👤 Add User", type="primary")
+                submit_user = st.form_submit_button("👤 Add User", type="primary", key="submit_user")
             with col_btn2:
-                cancel_user = st.form_submit_button("Cancel", type="secondary")
+                cancel_user = st.form_submit_button("Cancel", type="secondary", key="cancel_user")
             
             if submit_user:
                 if new_username and new_email and new_password:
@@ -1187,10 +1250,10 @@ def show_user_management():
         col_filter1, col_filter2 = st.columns(2)
         
         with col_filter1:
-            log_user = st.multiselect("Filter by User", df_activities['User'].unique())
+            log_user = st.multiselect("Filter by User", df_activities['User'].unique(), key="log_user")
         
         with col_filter2:
-            log_action = st.multiselect("Filter by Action", df_activities['Action'].unique())
+            log_action = st.multiselect("Filter by Action", df_activities['Action'].unique(), key="log_action")
         
         # Apply filters
         filtered_logs = df_activities.copy()
@@ -1205,19 +1268,20 @@ def show_user_management():
         st.dataframe(filtered_logs, width='stretch', hide_index=True)
         
         # Export logs
-        if st.button("📥 Export Activity Logs", type="primary"):
+        if st.button("📥 Export Activity Logs", type="primary", key="export_logs"):
             csv = filtered_logs.to_csv(index=False)
             st.download_button(
                 label="⬇️ Download CSV",
                 data=csv,
                 file_name=f"activity_logs_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key=f"activity_download_{datetime.now().strftime('%Y%m%d%H%M%S')}"
             )
     
     with tab4:
         st.markdown("### Account Settings Management")
         
-        selected_user = st.selectbox("Select User", [u['username'] for u in users])
+        selected_user = st.selectbox("Select User", [u['username'] for u in users], key="select_user")
         
         if selected_user:
             user = next((u for u in users if u['username'] == selected_user), None)
@@ -1231,18 +1295,18 @@ def show_user_management():
                     current_status = "🟢 Active" if random.choice([True, False]) else "🔴 Inactive"
                     st.write(f"**Current Status:** {current_status}")
                     
-                    new_status = st.radio("Change Status", ["Active", "Inactive", "Suspended"])
+                    new_status = st.radio("Change Status", ["Active", "Inactive", "Suspended"], key="new_status")
                     
-                    if st.button("🔄 Update Status", type="primary"):
+                    if st.button("🔄 Update Status", type="primary", key="update_status"):
                         st.success(f"Account status updated to: {new_status}")
                 
                 with col2:
                     st.markdown("#### Role Management")
                     
                     st.write(f"**Current Role:** {user['role']}")
-                    new_role = st.selectbox("Assign New Role", ["admin", "manager", "clerk"])
+                    new_role = st.selectbox("Assign New Role", ["admin", "manager", "clerk"], key="assign_role")
                     
-                    if st.button("👑 Update Role", type="primary"):
+                    if st.button("👑 Update Role", type="primary", key="update_role"):
                         st.success(f"Role updated to: {new_role}")
                 
                 st.markdown("---")
@@ -1251,13 +1315,13 @@ def show_user_management():
                 col_danger1, col_danger2 = st.columns(2)
                 
                 with col_danger1:
-                    if st.button("🔒 Force Password Reset", type="secondary"):
+                    if st.button("🔒 Force Password Reset", type="secondary", key="force_reset"):
                         st.warning("Password reset email sent to user.")
                 
                 with col_danger2:
-                    if st.button("🗑️ Delete Account", type="secondary"):
+                    if st.button("🗑️ Delete Account", type="secondary", key="delete_account"):
                         st.error("Are you sure you want to delete this account? This action cannot be undone.")
-                        confirm = st.checkbox("I confirm I want to delete this account")
+                        confirm = st.checkbox("I confirm I want to delete this account", key="confirm_delete")
                         if confirm:
                             st.error("Account deletion initiated. Contact system administrator for final confirmation.")
 
@@ -1274,25 +1338,25 @@ def show_settings():
             col1, col2 = st.columns(2)
             
             with col1:
-                business_name = st.text_input("Business Name*", value="Lukenya Getaway Resort")
-                tax_id = st.text_input("Tax ID/VAT Number", value="P123456789")
-                currency = st.selectbox("Currency", ["KES", "USD", "EUR", "GBP"], index=0)
-                tax_rate = st.number_input("Default Tax Rate (%)", value=16.0, min_value=0.0, max_value=30.0, step=0.1)
+                business_name = st.text_input("Business Name*", value="Lukenya Getaway Resort", key="biz_name")
+                tax_id = st.text_input("Tax ID/VAT Number", value="P123456789", key="tax_id")
+                currency = st.selectbox("Currency", ["KES", "USD", "EUR", "GBP"], index=0, key="currency")
+                tax_rate = st.number_input("Default Tax Rate (%)", value=16.0, min_value=0.0, max_value=30.0, step=0.1, key="default_tax")
             
             with col2:
-                address = st.text_area("Address", value="P.O. Box 19938 - 00202 KNH Nairobi")
-                phone1 = st.text_input("Primary Phone", value="+254 727 680 468")
-                phone2 = st.text_input("Secondary Phone", value="+254 736 880 488")
-                email = st.text_input("Business Email", value="info@lukenyagetaway.com")
-                website = st.text_input("Website", value="www.lukenyagetaway.com")
+                address = st.text_area("Address", value="P.O. Box 19938 - 00202 KNH Nairobi", key="address")
+                phone1 = st.text_input("Primary Phone", value="+254 727 680 468", key="phone1")
+                phone2 = st.text_input("Secondary Phone", value="+254 736 880 488", key="phone2")
+                email = st.text_input("Business Email", value="info@lukenyagetaway.com", key="biz_email")
+                website = st.text_input("Website", value="www.lukenyagetaway.com", key="website")
             
-            logo_file = st.file_uploader("Upload Business Logo", type=['png', 'jpg', 'jpeg'])
+            logo_file = st.file_uploader("Upload Business Logo", type=['png', 'jpg', 'jpeg'], key="logo_upload")
             
             col_btn1, col_btn2 = st.columns(2)
             with col_btn1:
-                save_profile = st.form_submit_button("💾 Save Profile", type="primary")
+                save_profile = st.form_submit_button("💾 Save Profile", type="primary", key="save_profile")
             with col_btn2:
-                cancel_profile = st.form_submit_button("Cancel", type="secondary")
+                cancel_profile = st.form_submit_button("Cancel", type="secondary", key="cancel_profile")
             
             if save_profile:
                 st.success("Business profile updated successfully!")
@@ -1325,15 +1389,16 @@ def show_settings():
         with col2:
             st.markdown("#### Template Options")
             
-            header_size = st.slider("Header Font Size", 12, 24, 16)
-            show_logo = st.checkbox("Show Logo", value=True)
-            show_footer = st.checkbox("Show Footer Message", value=True)
-            footer_message = st.text_area("Footer Message", value="Thank you for your business!")
+            header_size = st.slider("Header Font Size", 12, 24, 16, key="header_size")
+            show_logo = st.checkbox("Show Logo", value=True, key="show_logo")
+            show_footer = st.checkbox("Show Footer Message", value=True, key="show_footer")
+            footer_message = st.text_area("Footer Message", value="Thank you for your business!", key="footer_msg")
             
             template_style = st.selectbox("Template Style", 
-                                         ["Modern", "Classic", "Minimal", "Professional"])
+                                         ["Modern", "Classic", "Minimal", "Professional"],
+                                         key="template_style")
             
-            if st.button("🔄 Update Template", type="primary"):
+            if st.button("🔄 Update Template", type="primary", key="update_template"):
                 st.success("Receipt template updated successfully!")
     
     with tab3:
@@ -1344,33 +1409,35 @@ def show_settings():
         with col1:
             st.markdown("#### Email Notifications")
             
-            email_notifications = st.checkbox("Enable Email Notifications", value=True)
+            email_notifications = st.checkbox("Enable Email Notifications", value=True, key="email_notify")
             
             if email_notifications:
-                low_stock_email = st.checkbox("Low Stock Alerts", value=True)
-                sales_report_email = st.checkbox("Daily Sales Reports", value=True)
-                system_alerts = st.checkbox("System Alerts", value=True)
+                low_stock_email = st.checkbox("Low Stock Alerts", value=True, key="low_stock_email")
+                sales_report_email = st.checkbox("Daily Sales Reports", value=True, key="sales_report_email")
+                system_alerts = st.checkbox("System Alerts", value=True, key="system_alerts")
                 
                 email_frequency = st.selectbox("Report Frequency", 
-                                              ["Real-time", "Hourly", "Daily", "Weekly"])
+                                              ["Real-time", "Hourly", "Daily", "Weekly"],
+                                              key="email_freq")
                 
                 email_recipients = st.text_area("Notification Recipients (comma-separated)",
-                                               value="admin@system.com, manager@system.com")
+                                               value="admin@system.com, manager@system.com",
+                                               key="email_recipients")
         
         with col2:
             st.markdown("#### In-App Notifications")
             
-            inapp_notifications = st.checkbox("Enable In-App Notifications", value=True)
+            inapp_notifications = st.checkbox("Enable In-App Notifications", value=True, key="inapp_notify")
             
             if inapp_notifications:
-                show_sales_popup = st.checkbox("Show Sales Confirmations", value=True)
-                show_stock_alerts = st.checkbox("Show Stock Warnings", value=True)
-                show_system_messages = st.checkbox("Show System Messages", value=True)
+                show_sales_popup = st.checkbox("Show Sales Confirmations", value=True, key="show_popup")
+                show_stock_alerts = st.checkbox("Show Stock Warnings", value=True, key="show_stock_alerts")
+                show_system_messages = st.checkbox("Show System Messages", value=True, key="show_system_msgs")
                 
-                notification_sound = st.checkbox("Play Notification Sound", value=True)
-                sound_type = st.selectbox("Sound Type", ["Default", "Chime", "Beep", "None"])
+                notification_sound = st.checkbox("Play Notification Sound", value=True, key="notify_sound")
+                sound_type = st.selectbox("Sound Type", ["Default", "Chime", "Beep", "None"], key="sound_type")
         
-        if st.button("🔔 Save Notification Settings", type="primary"):
+        if st.button("🔔 Save Notification Settings", type="primary", key="save_notify"):
             st.success("Notification settings updated successfully!")
     
     with tab4:
@@ -1382,29 +1449,34 @@ def show_settings():
             st.markdown("#### General Settings")
             
             default_view = st.selectbox("Default Dashboard View", 
-                                       ["Sales Overview", "Inventory", "Reports", "User Dashboard"])
+                                       ["Sales Overview", "Inventory", "Reports", "User Dashboard"],
+                                       key="default_view")
             
-            auto_logout = st.checkbox("Enable Auto Logout", value=True)
+            auto_logout = st.checkbox("Enable Auto Logout", value=True, key="auto_logout")
             if auto_logout:
-                logout_time = st.slider("Inactivity Timeout (minutes)", 5, 120, 30)
+                logout_time = st.slider("Inactivity Timeout (minutes)", 5, 120, 30, key="logout_time")
             
             data_retention = st.number_input("Data Retention Period (days)", 
-                                           min_value=30, max_value=365*5, value=365, step=30)
+                                           min_value=30, max_value=365*5, value=365, step=30,
+                                           key="data_retention")
             
             backup_frequency = st.selectbox("Auto Backup Frequency", 
-                                          ["Daily", "Weekly", "Monthly", "Never"])
+                                          ["Daily", "Weekly", "Monthly", "Never"],
+                                          key="backup_freq")
         
         with col2:
             st.markdown("#### Display Settings")
             
-            theme = st.selectbox("Theme", ["Light", "Dark", "Auto"])
-            language = st.selectbox("Language", ["English", "Swahili", "French", "Spanish"])
+            theme = st.selectbox("Theme", ["Light", "Dark", "Auto"], key="theme")
+            language = st.selectbox("Language", ["English", "Swahili", "French", "Spanish"], key="language")
             date_format = st.selectbox("Date Format", 
-                                      ["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY", "DD MMM YYYY"])
+                                      ["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY", "DD MMM YYYY"],
+                                      key="date_format")
             
-            decimal_places = st.slider("Decimal Places", 0, 4, 2)
+            decimal_places = st.slider("Decimal Places", 0, 4, 2, key="decimal_places")
             number_format = st.selectbox("Number Format", 
-                                        ["1,000.00", "1.000,00", "1 000.00"])
+                                        ["1,000.00", "1.000,00", "1 000.00"],
+                                        key="number_format")
         
         st.markdown("---")
         st.markdown("#### System Maintenance")
@@ -1412,18 +1484,18 @@ def show_settings():
         col_maint1, col_maint2, col_maint3 = st.columns(3)
         
         with col_maint1:
-            if st.button("🔄 Clear Cache", type="secondary"):
+            if st.button("🔄 Clear Cache", type="secondary", key="clear_cache"):
                 st.info("Cache cleared successfully!")
         
         with col_maint2:
-            if st.button("📊 Rebuild Indexes", type="secondary"):
+            if st.button("📊 Rebuild Indexes", type="secondary", key="rebuild_index"):
                 st.info("Database indexes rebuilt successfully!")
         
         with col_maint3:
-            if st.button("🚀 System Diagnostics", type="secondary"):
+            if st.button("🚀 System Diagnostics", type="secondary", key="sys_diagnostics"):
                 st.info("System diagnostics completed. All systems operational.")
         
-        if st.button("💾 Save All Settings", type="primary"):
+        if st.button("💾 Save All Settings", type="primary", key="save_all_settings"):
             st.success("All system settings saved successfully!")
 
 # MODULE 8: Security Settings
@@ -1439,24 +1511,24 @@ def show_security():
             col1, col2 = st.columns(2)
             
             with col1:
-                min_length = st.slider("Minimum Password Length", 6, 20, 8)
-                require_uppercase = st.checkbox("Require Uppercase Letters", value=True)
-                require_lowercase = st.checkbox("Require Lowercase Letters", value=True)
-                require_numbers = st.checkbox("Require Numbers", value=True)
+                min_length = st.slider("Minimum Password Length", 6, 20, 8, key="min_length")
+                require_uppercase = st.checkbox("Require Uppercase Letters", value=True, key="req_upper")
+                require_lowercase = st.checkbox("Require Lowercase Letters", value=True, key="req_lower")
+                require_numbers = st.checkbox("Require Numbers", value=True, key="req_numbers")
             
             with col2:
-                require_special = st.checkbox("Require Special Characters", value=True)
-                password_expiry = st.slider("Password Expiry (days)", 0, 365, 90)
-                max_login_attempts = st.slider("Max Failed Login Attempts", 1, 10, 3)
-                lockout_duration = st.slider("Lockout Duration (minutes)", 1, 60, 15)
+                require_special = st.checkbox("Require Special Characters", value=True, key="req_special")
+                password_expiry = st.slider("Password Expiry (days)", 0, 365, 90, key="pass_expiry")
+                max_login_attempts = st.slider("Max Failed Login Attempts", 1, 10, 3, key="max_attempts")
+                lockout_duration = st.slider("Lockout Duration (minutes)", 1, 60, 15, key="lockout_duration")
             
-            save_policy = st.form_submit_button("💾 Save Policy", type="primary")
+            save_policy = st.form_submit_button("💾 Save Policy", type="primary", key="save_policy")
             
             if save_policy:
                 st.success("Password policy updated successfully!")
         
         st.markdown("### Password Strength Test")
-        test_password = st.text_input("Test Password Strength", type="password")
+        test_password = st.text_input("Test Password Strength", type="password", key="test_password")
         
         if test_password:
             strength = 0
@@ -1507,7 +1579,7 @@ def show_security():
         st.markdown("### Role-Based Access Control")
         
         roles = ['admin', 'manager', 'clerk']
-        selected_role = st.selectbox("Select Role to Configure", roles)
+        selected_role = st.selectbox("Select Role to Configure", roles, key="select_role")
         
         if selected_role:
             st.markdown(f"#### Permissions for {selected_role.upper()} Role")
@@ -1516,35 +1588,35 @@ def show_security():
             
             with col_perm1:
                 st.markdown("**Sales Module**")
-                can_process_sales = st.checkbox("Process Sales", value=True)
-                can_view_sales = st.checkbox("View Sales", value=True)
-                can_refund_sales = st.checkbox("Process Refunds", value=selected_role in ['admin', 'manager'])
+                can_process_sales = st.checkbox("Process Sales", value=True, key="can_process_sales")
+                can_view_sales = st.checkbox("View Sales", value=True, key="can_view_sales")
+                can_refund_sales = st.checkbox("Process Refunds", value=selected_role in ['admin', 'manager'], key="can_refund_sales")
             
             with col_perm2:
                 st.markdown("**Inventory Module**")
-                can_view_inventory = st.checkbox("View Inventory", value=True)
-                can_edit_inventory = st.checkbox("Edit Inventory", value=selected_role in ['admin', 'manager'])
-                can_delete_inventory = st.checkbox("Delete Items", value=selected_role == 'admin')
+                can_view_inventory = st.checkbox("View Inventory", value=True, key="can_view_inventory")
+                can_edit_inventory = st.checkbox("Edit Inventory", value=selected_role in ['admin', 'manager'], key="can_edit_inventory")
+                can_delete_inventory = st.checkbox("Delete Items", value=selected_role == 'admin', key="can_delete_inventory")
             
             with col_perm3:
                 st.markdown("**Reports Module**")
-                can_view_reports = st.checkbox("View Reports", value=True)
-                can_export_reports = st.checkbox("Export Reports", value=selected_role in ['admin', 'manager'])
-                can_view_analytics = st.checkbox("View Analytics", value=selected_role in ['admin', 'manager'])
+                can_view_reports = st.checkbox("View Reports", value=True, key="can_view_reports")
+                can_export_reports = st.checkbox("Export Reports", value=selected_role in ['admin', 'manager'], key="can_export_reports")
+                can_view_analytics = st.checkbox("View Analytics", value=selected_role in ['admin', 'manager'], key="can_view_analytics")
             
             if selected_role in ['admin', 'manager']:
                 st.markdown("**Administration**")
                 col_admin1, col_admin2 = st.columns(2)
                 
                 with col_admin1:
-                    can_manage_users = st.checkbox("Manage Users", value=selected_role == 'admin')
-                    can_manage_settings = st.checkbox("Manage Settings", value=selected_role == 'admin')
+                    can_manage_users = st.checkbox("Manage Users", value=selected_role == 'admin', key="can_manage_users")
+                    can_manage_settings = st.checkbox("Manage Settings", value=selected_role == 'admin', key="can_manage_settings")
                 
                 with col_admin2:
-                    can_view_logs = st.checkbox("View System Logs", value=True)
-                    can_backup_data = st.checkbox("Backup Data", value=selected_role == 'admin')
+                    can_view_logs = st.checkbox("View System Logs", value=True, key="can_view_logs")
+                    can_backup_data = st.checkbox("Backup Data", value=selected_role == 'admin', key="can_backup_data")
             
-            if st.button(f"💾 Save {selected_role} Permissions", type="primary"):
+            if st.button(f"💾 Save {selected_role} Permissions", type="primary", key=f"save_{selected_role}_perms"):
                 st.success(f"Permissions for {selected_role} role saved successfully!")
     
     with tab3:
@@ -1580,10 +1652,10 @@ def show_security():
         col_filter1, col_filter2 = st.columns(2)
         
         with col_filter1:
-            log_event = st.multiselect("Filter by Event", df_security['Event'].unique())
+            log_event = st.multiselect("Filter by Event", df_security['Event'].unique(), key="log_event")
         
         with col_filter2:
-            log_status = st.multiselect("Filter by Status", df_security['Status'].unique())
+            log_status = st.multiselect("Filter by Status", df_security['Status'].unique(), key="log_status")
         
         # Apply filters
         filtered_security = df_security.copy()
@@ -1601,19 +1673,20 @@ def show_security():
         col_export, col_clear = st.columns(2)
         
         with col_export:
-            if st.button("📥 Export Audit Logs", type="primary"):
+            if st.button("📥 Export Audit Logs", type="primary", key="export_audit"):
                 csv = filtered_security.to_csv(index=False)
                 st.download_button(
                     label="⬇️ Download CSV",
                     data=csv,
                     file_name=f"audit_logs_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv"
+                    mime="text/csv",
+                    key=f"audit_download_{datetime.now().strftime('%Y%m%d%H%M%S')}"
                 )
         
         with col_clear:
-            if st.button("🗑️ Clear Old Logs", type="secondary"):
+            if st.button("🗑️ Clear Old Logs", type="secondary", key="clear_old_logs"):
                 st.warning("This will delete logs older than 90 days. Continue?")
-                if st.checkbox("Yes, clear old logs"):
+                if st.checkbox("Yes, clear old logs", key="confirm_clear_logs"):
                     st.info("Old logs cleared successfully!")
     
     with tab4:
@@ -1624,27 +1697,28 @@ def show_security():
         with col1:
             st.markdown("#### Authentication")
             
-            two_factor_auth = st.checkbox("Enable Two-Factor Authentication", value=False)
+            two_factor_auth = st.checkbox("Enable Two-Factor Authentication", value=False, key="two_factor")
             if two_factor_auth:
                 two_factor_method = st.selectbox("2FA Method", 
-                                                ["SMS", "Email", "Authenticator App"])
-                require_2fa_admins = st.checkbox("Require 2FA for Admins", value=True)
-                require_2fa_all = st.checkbox("Require 2FA for All Users", value=False)
+                                                ["SMS", "Email", "Authenticator App"],
+                                                key="two_factor_method")
+                require_2fa_admins = st.checkbox("Require 2FA for Admins", value=True, key="req_2fa_admins")
+                require_2fa_all = st.checkbox("Require 2FA for All Users", value=False, key="req_2fa_all")
             
-            biometric_auth = st.checkbox("Enable Biometric Authentication", value=False)
+            biometric_auth = st.checkbox("Enable Biometric Authentication", value=False, key="biometric_auth")
             if biometric_auth:
                 st.info("Biometric authentication requires compatible hardware")
         
         with col2:
             st.markdown("#### Session Security")
             
-            single_session = st.checkbox("Single Session Per User", value=True)
+            single_session = st.checkbox("Single Session Per User", value=True, key="single_session")
             if single_session:
                 st.info("Users will be logged out from other devices")
             
-            session_timeout = st.slider("Session Timeout (minutes)", 15, 480, 30)
-            secure_cookies = st.checkbox("Secure Cookies Only", value=True)
-            http_only = st.checkbox("HTTP Only Cookies", value=True)
+            session_timeout = st.slider("Session Timeout (minutes)", 15, 480, 30, key="session_timeout")
+            secure_cookies = st.checkbox("Secure Cookies Only", value=True, key="secure_cookies")
+            http_only = st.checkbox("HTTP Only Cookies", value=True, key="http_only")
         
         st.markdown("---")
         st.markdown("#### Data Protection")
@@ -1652,31 +1726,33 @@ def show_security():
         col_prot1, col_prot2 = st.columns(2)
         
         with col_prot1:
-            data_encryption = st.checkbox("Enable Data Encryption", value=True)
+            data_encryption = st.checkbox("Enable Data Encryption", value=True, key="data_encryption")
             if data_encryption:
                 encryption_level = st.selectbox("Encryption Level", 
-                                              ["AES-128", "AES-256", "RSA-2048", "RSA-4096"])
+                                              ["AES-128", "AES-256", "RSA-2048", "RSA-4096"],
+                                              key="encryption_level")
             
-            backup_encryption = st.checkbox("Encrypt Backups", value=True)
+            backup_encryption = st.checkbox("Encrypt Backups", value=True, key="backup_encryption")
         
         with col_prot2:
-            mask_sensitive = st.checkbox("Mask Sensitive Data", value=True)
+            mask_sensitive = st.checkbox("Mask Sensitive Data", value=True, key="mask_sensitive")
             if mask_sensitive:
                 mask_fields = st.multiselect("Fields to Mask", 
-                                           ["Passwords", "Credit Cards", "Phone Numbers", "Email Addresses"])
+                                           ["Passwords", "Credit Cards", "Phone Numbers", "Email Addresses"],
+                                           key="mask_fields")
             
-            auto_logout_sensitive = st.checkbox("Auto-logout on Sensitive Operations", value=True)
+            auto_logout_sensitive = st.checkbox("Auto-logout on Sensitive Operations", value=True, key="auto_logout_sensitive")
         
         st.markdown("---")
         st.markdown("#### Security Monitoring")
         
-        intrusion_detection = st.checkbox("Enable Intrusion Detection", value=True)
+        intrusion_detection = st.checkbox("Enable Intrusion Detection", value=True, key="intrusion_detection")
         if intrusion_detection:
-            alert_on_many_failures = st.checkbox("Alert on Multiple Failures", value=True)
-            monitor_privileged = st.checkbox("Monitor Privileged Accounts", value=True)
-            log_all_access = st.checkbox("Log All Access Attempts", value=True)
+            alert_on_many_failures = st.checkbox("Alert on Multiple Failures", value=True, key="alert_failures")
+            monitor_privileged = st.checkbox("Monitor Privileged Accounts", value=True, key="monitor_privileged")
+            log_all_access = st.checkbox("Log All Access Attempts", value=True, key="log_all_access")
         
-        if st.button("🛡️ Apply Security Settings", type="primary"):
+        if st.button("🛡️ Apply Security Settings", type="primary", key="apply_security"):
             st.success("Security settings applied successfully!")
             st.info("Some settings may require system restart to take effect")
 
@@ -1798,15 +1874,17 @@ def main():
                 
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
-                    if st.button("✅ Yes, Logout", type="primary"):
+                    if st.button("✅ Yes, Logout", type="primary", key="yes_logout"):
                         st.session_state.authenticated = False
                         st.session_state.current_user = None
                         st.session_state.cart = []
                         st.session_state.last_receipt = None
+                        st.session_state.products_data = None
+                        st.session_state.users_data = None
                         st.success("Logged out successfully!")
                         st.rerun()
                 with col_btn2:
-                    if st.button("❌ Cancel"):
+                    if st.button("❌ Cancel", key="cancel_logout"):
                         st.session_state.selected_module = "Dashboard"
                         st.rerun()
 
